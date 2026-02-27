@@ -31,8 +31,9 @@ async function applyToJob(req, res) {
       return res.status(400).json({ error: 'Resume PDF file is required' });
     }
 
-    logger.info('Parsing resume PDF', { filePath: req.file.path });
-    const parsedResume = await parseResume(req.file.path);
+    const useLLM = process.env.ENABLE_LLM_PARSING === 'true' || req.query.use_llm === 'true';
+    logger.info('Parsing resume PDF', { filePath: req.file.path, useLLM });
+    const parsedResume = await parseResume(req.file.path, { useLLM });
     logger.info('Resume parsed', {
       hasError: !!parsedResume.error,
       skillsCount: parsedResume.skills?.length ?? 0,

@@ -1,20 +1,41 @@
 const fs = require('fs');
 const { PDFParse } = require('pdf-parse');
 const logger = require('../utils/logger');
+const { getCanonical } = require('./skillSynonyms');
 
-// Rule-based keyword dictionaries
+// Expanded skill keywords (~120 entries)
 const SKILL_KEYWORDS = [
+  // Programming Languages
   'javascript', 'typescript', 'python', 'java', 'c++', 'c#', 'ruby', 'go', 'rust', 'swift',
-  'react', 'angular', 'vue', 'node.js', 'nodejs', 'express', 'django', 'flask', 'spring',
-  'aws', 'azure', 'gcp', 'docker', 'kubernetes', 'terraform', 'jenkins', 'ci/cd',
-  'sql', 'postgresql', 'mysql', 'mongodb', 'redis', 'elasticsearch',
-  'html', 'css', 'sass', 'tailwind', 'bootstrap',
-  'git', 'linux', 'agile', 'scrum', 'jira',
-  'machine learning', 'deep learning', 'nlp', 'computer vision', 'tensorflow', 'pytorch',
-  'rest', 'graphql', 'microservices', 'api', 'oauth',
-  'figma', 'photoshop', 'illustrator',
-  'excel', 'power bi', 'tableau',
-  'communication', 'leadership', 'problem solving', 'teamwork',
+  'kotlin', 'php', 'scala', 'r', 'dart', 'elixir', 'perl', 'lua', 'haskell', 'clojure',
+  // Frontend
+  'react', 'angular', 'vue', 'svelte', 'next.js', 'nuxt.js', 'html', 'css', 'sass', 'scss',
+  'tailwind', 'bootstrap', 'jquery', 'redux', 'webpack', 'vite',
+  // Backend
+  'node.js', 'nodejs', 'express', 'django', 'flask', 'fastapi', 'spring', 'spring boot',
+  'rails', 'ruby on rails', '.net', 'asp.net', 'nestjs', 'fastify', 'laravel', 'gin',
+  // Databases
+  'sql', 'postgresql', 'mysql', 'mongodb', 'redis', 'elasticsearch', 'dynamodb', 'cassandra',
+  'sqlite', 'firebase', 'supabase', 'prisma', 'sequelize', 'typeorm', 'knex',
+  // DevOps & Cloud
+  'docker', 'kubernetes', 'terraform', 'ansible', 'jenkins', 'ci/cd', 'github actions',
+  'gitlab ci', 'aws', 'azure', 'gcp', 'nginx', 'linux', 'bash',
+  // Data Science & ML
+  'machine learning', 'deep learning', 'nlp', 'natural language processing', 'computer vision',
+  'tensorflow', 'pytorch', 'pandas', 'numpy', 'scikit-learn', 'data science', 'spark',
+  // APIs & Architecture
+  'rest', 'graphql', 'microservices', 'api', 'oauth', 'grpc', 'websocket', 'rabbitmq', 'kafka',
+  // Mobile
+  'react native', 'flutter', 'ios', 'android',
+  // Testing
+  'jest', 'mocha', 'cypress', 'playwright', 'selenium',
+  // Tools
+  'git', 'jira', 'figma', 'photoshop', 'illustrator',
+  // BI & Analytics
+  'excel', 'power bi', 'tableau', 'looker',
+  // Soft Skills
+  'communication', 'leadership', 'problem solving', 'teamwork', 'project management',
+  'agile', 'scrum',
 ];
 
 const DEGREE_PATTERNS = [
@@ -31,6 +52,58 @@ const EDUCATION_RANK = {
   diploma: 1, associate: 1,
 };
 
+// Section header patterns for splitting resume into sections
+const SECTION_HEADERS = [
+  { name: 'experience', patterns: [/\b(work\s+)?experience\b/i, /\bemployment\s+history\b/i, /\bprofessional\s+experience\b/i, /\bwork\s+history\b/i, /\bcareer\s+history\b/i] },
+  { name: 'education', patterns: [/\beducation\b/i, /\bacademic\b/i, /\bqualifications?\b/i] },
+  { name: 'skills', patterns: [/\bskills?\b/i, /\btechnical\s+skills?\b/i, /\bcore\s+competenc/i, /\bproficienc/i, /\btechnologies\b/i, /\btools?\s*&?\s*technologies\b/i] },
+  { name: 'summary', patterns: [/\bsummary\b/i, /\bobjective\b/i, /\bprofile\b/i, /\babout\s+me\b/i, /\bprofessional\s+summary\b/i] },
+  { name: 'projects', patterns: [/\bprojects?\b/i] },
+  { name: 'certifications', patterns: [/\bcertifications?\b/i, /\blicenses?\b/i] },
+];
+
+/**
+ * Split resume text into detected sections.
+ * Returns an object with section names as keys and section text as values.
+ * The 'header' key contains text before the first recognized section.
+ */
+function splitIntoSections(text) {
+  const lines = text.split('\n');
+  const sections = { _full: text };
+  let currentSection = 'header';
+  sections[currentSection] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    let matched = false;
+
+    // A section header is typically a short line (< 60 chars)
+    if (trimmed.length > 0 && trimmed.length < 60) {
+      for (const { name, patterns } of SECTION_HEADERS) {
+        if (patterns.some(p => p.test(trimmed))) {
+          currentSection = name;
+          sections[currentSection] = sections[currentSection] || [];
+          matched = true;
+          break;
+        }
+      }
+    }
+
+    if (!matched) {
+      sections[currentSection] = sections[currentSection] || [];
+      sections[currentSection].push(line);
+    }
+  }
+
+  // Join arrays into strings
+  for (const key of Object.keys(sections)) {
+    if (Array.isArray(sections[key])) {
+      sections[key] = sections[key].join('\n');
+    }
+  }
+  return sections;
+}
+
 function extractEmail(text) {
   const match = text.match(/[\w.-]+@[\w.-]+\.\w+/);
   return match ? match[0] : null;
@@ -41,24 +114,62 @@ function extractPhone(text) {
   return match ? match[0].trim() : null;
 }
 
-function extractName(text) {
-  // Take the first non-empty line as name (common resume format)
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  if (lines.length === 0) return null;
-  const firstLine = lines[0];
-  // Only return if it looks like a name (2-4 words, no special chars)
-  if (/^[A-Za-z\s.]{2,60}$/.test(firstLine) && firstLine.split(/\s+/).length <= 5) {
-    return firstLine;
+function extractName(text, sections) {
+  const headerText = sections?.header || '';
+  const lines = headerText.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // Strategy 1: find a name-like line in the header (skip email/phone lines)
+  for (const line of lines.slice(0, 5)) {
+    if (/[@\d]/.test(line)) continue;
+    if (/^[A-Za-z\s.'-]{2,60}$/.test(line) && line.split(/\s+/).length >= 2 && line.split(/\s+/).length <= 5) {
+      return line;
+    }
+  }
+
+  // Strategy 2: line before email
+  const allLines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const emailIdx = allLines.findIndex(l => /[\w.-]+@[\w.-]+\.\w+/.test(l));
+  if (emailIdx > 0) {
+    const candidate = allLines[emailIdx - 1];
+    if (/^[A-Za-z\s.'-]{2,60}$/.test(candidate) && candidate.split(/\s+/).length <= 5) {
+      return candidate;
+    }
+  }
+
+  // Fallback: original first-line approach on full text
+  if (allLines.length > 0 && /^[A-Za-z\s.]{2,60}$/.test(allLines[0]) && allLines[0].split(/\s+/).length <= 5) {
+    return allLines[0];
   }
   return null;
 }
 
-function extractSkills(text) {
+function extractSkills(text, sections) {
   const lowerText = text.toLowerCase();
-  return SKILL_KEYWORDS.filter(skill => {
+
+  // Step 1: match against SKILL_KEYWORDS in full text
+  const keywordMatches = SKILL_KEYWORDS.filter(skill => {
     const escaped = skill.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`\\b${escaped}\\b`, 'i').test(lowerText);
   });
+
+  // Step 2: extract items from skills section (comma/pipe/bullet separated)
+  const sectionSkills = [];
+  const skillSectionText = sections?.skills || '';
+  if (skillSectionText) {
+    const tokens = skillSectionText
+      .split(/[,|•·\n]/)
+      .map(t => t.replace(/^[-:*]\s*/, '').trim().toLowerCase())
+      .filter(t => t.length >= 2 && t.length <= 40 && !/^\d+$/.test(t));
+    sectionSkills.push(...tokens);
+  }
+
+  // Step 3: canonicalize all found skills and deduplicate
+  const allFound = new Set();
+  for (const s of [...keywordMatches, ...sectionSkills]) {
+    allFound.add(getCanonical(s));
+  }
+
+  return Array.from(allFound);
 }
 
 function extractEducation(text) {
@@ -71,12 +182,15 @@ function extractEducation(text) {
   return [...new Set(found)];
 }
 
-function extractExperienceYears(text) {
-  // Look for patterns like "5 years", "5+ years of experience"
+function extractExperienceYears(text, sections) {
+  // Primary: explicit "X years" patterns (search full text)
   const patterns = [
     /(\d{1,2})\+?\s*(?:years?|yrs?)\s*(?:of)?\s*(?:experience|exp)/i,
     /experience\s*:?\s*(\d{1,2})\+?\s*(?:years?|yrs?)/i,
-    /(\d{1,2})\+?\s*(?:years?|yrs?)\s*(?:in|of)/i,
+    /(\d{1,2})\+?\s*(?:years?|yrs?)\s*(?:in|of|total)/i,
+    /(?:over|more than|at least)\s+(\d{1,2})\+?\s*(?:years?|yrs?)/i,
+    /(\d{1,2})\+?\s*(?:years?|yrs?)\s*(?:professional|industry|relevant)/i,
+    /(\d{1,2})\s*(?:years?|yrs?)\s*experience/i,
   ];
 
   for (const pattern of patterns) {
@@ -84,22 +198,32 @@ function extractExperienceYears(text) {
     if (match) return parseInt(match[1], 10);
   }
 
-  // Fallback: count year ranges (e.g., 2018-2023)
-  const yearRanges = text.matchAll(/\b(20\d{2})\s*[-–]\s*(20\d{2}|present|current)\b/gi);
+  // Fallback: count year ranges — prefer experience section to avoid education dates
+  const expText = sections?.experience || text;
+  const yearRanges = expText.matchAll(/\b(20\d{2}|19\d{2})\s*[-–—]\s*(20\d{2}|19\d{2}|present|current|now)\b/gi);
   let totalYears = 0;
   for (const m of yearRanges) {
     const start = parseInt(m[1], 10);
-    const end = m[2].toLowerCase() === 'present' || m[2].toLowerCase() === 'current'
+    const endStr = m[2].toLowerCase();
+    const end = endStr === 'present' || endStr === 'current' || endStr === 'now'
       ? new Date().getFullYear()
       : parseInt(m[2], 10);
     totalYears += end - start;
   }
+  if (totalYears > 0) return totalYears;
 
-  return totalYears || 0;
+  // Fallback: "since YYYY"
+  const sinceMatch = text.match(/\bsince\s+(20\d{2})\b/i);
+  if (sinceMatch) {
+    const start = parseInt(sinceMatch[1], 10);
+    return Math.max(0, new Date().getFullYear() - start);
+  }
+
+  return 0;
 }
 
-async function parseResume(filePath) {
-  logger.debug('parseResume started', { filePath });
+async function parseResume(filePath, options = {}) {
+  logger.debug('parseResume started', { filePath, options });
   const buffer = fs.readFileSync(filePath);
   const parser = new PDFParse({ data: buffer });
   try {
@@ -112,19 +236,40 @@ async function parseResume(filePath) {
       return { error: 'Insufficient data to evaluate this candidate.', raw_text: text };
     }
 
+    // Try LLM parsing if enabled
+    if (options.useLLM) {
+      try {
+        const { parseResumeWithLLM } = require('./llmParser');
+        const llmResult = await parseResumeWithLLM(text);
+        if (llmResult && !llmResult.error) {
+          logger.info('LLM parsing succeeded, using LLM result');
+          return llmResult;
+        }
+        logger.warn('LLM parsing returned null, falling back to rule-based');
+      } catch (err) {
+        logger.warn('LLM parsing unavailable, falling back to rule-based', { message: err.message });
+      }
+    }
+
+    // Section-aware rule-based parsing
+    const sections = splitIntoSections(text);
+
     const parsed = {
-      name: extractName(text),
+      name: extractName(text, sections),
       email: extractEmail(text),
       phone: extractPhone(text),
-      skills: extractSkills(text),
-      education: extractEducation(text),
-      experience_years: extractExperienceYears(text),
+      skills: extractSkills(text, sections),
+      education: extractEducation(sections?.education || text),
+      experience_years: extractExperienceYears(text, sections),
       raw_text: text,
+      sections_detected: Object.keys(sections).filter(k => k !== '_full'),
+      parser_version: 'rule-v2',
     };
     logger.debug('Resume parsed successfully', {
       name: parsed.name,
       skillsCount: parsed.skills?.length ?? 0,
       education: parsed.education,
+      sectionsDetected: parsed.sections_detected,
     });
     return parsed;
   } finally {
