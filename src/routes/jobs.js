@@ -2,12 +2,16 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { authenticate, authorize } = require('../middleware/auth');
 const { createJob, getJobs, getJobById, getMyJobs } = require('../controllers/jobController');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
 const validate = (req, res, next) => {
   const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+  if (!errors.isEmpty()) {
+    logger.warn('Validation failed', { path: req.path, errors: errors.array() });
+    return res.status(400).json({ errors: errors.array() });
+  }
   next();
 };
 

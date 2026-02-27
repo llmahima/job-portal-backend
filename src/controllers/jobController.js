@@ -1,8 +1,15 @@
 const db = require('../config/db');
+const logger = require('../utils/logger');
 
 async function createJob(req, res) {
   try {
     const { title, description, required_skills, min_experience, education_level, location, job_type } = req.body;
+
+    logger.info('Creating job', {
+      title,
+      skillsCount: required_skills?.length ?? 0,
+      recruiterId: req.user?.id,
+    });
 
     const [job] = await db('jobs')
       .insert({
@@ -17,8 +24,10 @@ async function createJob(req, res) {
       })
       .returning('*');
 
+    logger.info('Job created', { jobId: job.id, title: job.title });
     res.status(201).json(job);
   } catch (err) {
+    logger.error('Create job failed', { message: err.message });
     res.status(500).json({ error: err.message });
   }
 }

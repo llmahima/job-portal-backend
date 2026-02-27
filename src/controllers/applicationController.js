@@ -1,6 +1,7 @@
 const db = require('../config/db');
 const { parseResume } = require('../services/resumeParser');
 const { calculateATSScore } = require('../services/atsScorer');
+const logger = require('../utils/logger');
 const path = require('path');
 
 async function applyToJob(req, res) {
@@ -8,28 +9,43 @@ async function applyToJob(req, res) {
     const { id: jobId } = req.params;
     const candidateId = req.user.id;
 
+    logger.info('Apply to job started', { jobId, candidateId });
+
     // Check job exists and is open
     const job = await db('jobs').where({ id: jobId, status: 'open' }).first();
     if (!job) {
+      logger.warn('Apply failed: job not found or closed', { jobId });
       return res.status(404).json({ error: 'Job not found or no longer accepting applications' });
     }
 
     // Duplicate prevention
     const existing = await db('applications').where({ job_id: jobId, candidate_id: candidateId }).first();
     if (existing) {
+      logger.warn('Apply failed: duplicate application', { jobId, candidateId });
       return res.status(409).json({ error: 'You have already applied to this job' });
     }
 
     // Resume file is required
     if (!req.file) {
+      logger.warn('Apply failed: no file uploaded', { jobId });
       return res.status(400).json({ error: 'Resume PDF file is required' });
     }
 
-    // Parse resume
+    logger.info('Parsing resume PDF', { filePath: req.file.path });
     const parsedResume = await parseResume(req.file.path);
+    logger.info('Resume parsed', {
+      hasError: !!parsedResume.error,
+      skillsCount: parsedResume.skills?.length ?? 0,
+      experienceYears: parsedResume.experience_years,
+    });
 
-    // Calculate ATS score
+    logger.info('Calculating ATS score', { jobId, jobTitle: job.title });
     const scoreResult = calculateATSScore(parsedResume, job);
+    logger.info('ATS score calculated', {
+      jobId,
+      totalScore: scoreResult.total_score,
+      sufficientData: scoreResult.sufficient_data,
+    });
 
     // Save application
     const [application] = await db('applications')
@@ -43,11 +59,23 @@ async function applyToJob(req, res) {
       })
       .returning('*');
 
+    logger.info('Application submitted', {
+      applicationId: application.id,
+      jobId,
+      candidateId,
+      atsScore: scoreResult.total_score,
+    });
+
     res.status(201).json({
       application,
       ats_result: scoreResult,
     });
   } catch (err) {
+    logger.error('Apply to job failed', {
+      jobId: req.params?.id,
+      message: err.message,
+      code: err.code,
+    });
     if (err.code === '23505') {
       return res.status(409).json({ error: 'You have already applied to this job' });
     }

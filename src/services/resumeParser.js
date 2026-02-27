@@ -1,5 +1,6 @@
 const fs = require('fs');
-const pdfParse = require('pdf-parse');
+const { PDFParse } = require('pdf-parse');
+const logger = require('../utils/logger');
 
 // Rule-based keyword dictionaries
 const SKILL_KEYWORDS = [
@@ -23,7 +24,12 @@ const DEGREE_PATTERNS = [
   { pattern: /\b(diploma|associate'?s?)\b/i, level: 'diploma', rank: 1 },
 ];
 
-const EDUCATION_RANK = { phd: 4, masters: 3, bachelors: 2, diploma: 1 };
+const EDUCATION_RANK = {
+  phd: 4, doctorate: 4, doctoral: 4,
+  masters: 3, mtech: 3, mba: 3, me: 3, ms: 3,
+  bachelors: 2, btech: 2, be: 2, bsc: 2, ba: 2, bcom: 2,
+  diploma: 1, associate: 1,
+};
 
 function extractEmail(text) {
   const match = text.match(/[\w.-]+@[\w.-]+\.\w+/);
@@ -93,23 +99,37 @@ function extractExperienceYears(text) {
 }
 
 async function parseResume(filePath) {
+  logger.debug('parseResume started', { filePath });
   const buffer = fs.readFileSync(filePath);
-  const data = await pdfParse(buffer);
-  const text = data.text;
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const result = await parser.getText();
+    const text = result?.text ?? '';
+    logger.debug('PDF text extracted', { charCount: text?.length ?? 0 });
 
-  if (!text || text.trim().length < 20) {
-    return { error: 'Insufficient data to evaluate this candidate.', raw_text: text };
+    if (!text || text.trim().length < 20) {
+      logger.warn('Insufficient resume text', { charCount: text?.length ?? 0 });
+      return { error: 'Insufficient data to evaluate this candidate.', raw_text: text };
+    }
+
+    const parsed = {
+      name: extractName(text),
+      email: extractEmail(text),
+      phone: extractPhone(text),
+      skills: extractSkills(text),
+      education: extractEducation(text),
+      experience_years: extractExperienceYears(text),
+      raw_text: text,
+    };
+    logger.debug('Resume parsed successfully', {
+      name: parsed.name,
+      skillsCount: parsed.skills?.length ?? 0,
+      education: parsed.education,
+    });
+    return parsed;
+  } finally {
+    await parser.destroy();
   }
-
-  return {
-    name: extractName(text),
-    email: extractEmail(text),
-    phone: extractPhone(text),
-    skills: extractSkills(text),
-    education: extractEducation(text),
-    experience_years: extractExperienceYears(text),
-    raw_text: text,
-  };
 }
 
 module.exports = { parseResume, EDUCATION_RANK };
